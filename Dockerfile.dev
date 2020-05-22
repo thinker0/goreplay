@@ -1,4 +1,4 @@
-FROM golang:alpine
+FROM golang:1.14
 
 RUN apk update
 RUN apk add --no-cache ruby vim \
@@ -22,6 +22,9 @@ RUN apk add --no-cache ruby vim \
     pkgconf           \
     wget
 
+RUN apt-get install flex bison -y
+RUN wget http://www.tcpdump.org/release/libpcap-1.8.1.tar.gz && tar xzf libpcap-1.8.1.tar.gz && cd libpcap-1.8.1 && ./configure && make install
+RUN apt-get install default-jre default-jdk -y
 RUN go get github.com/google/gopacket
 RUN go get -u golang.org/x/lint/golint
 
