@@ -4,47 +4,53 @@ import (
 	"bytes"
 	"io"
 	"log"
+	"sync"
 	"time"
 )
 
+var wg sync.WaitGroup
+var closeOnce sync.Once
+
 // Start initialize loop for sending data from inputs to outputs
-func Start(stop chan int) {
+func Start(plugins *InOutPlugins, stop chan int) {
 	if Settings.middleware != "" {
 		middleware := NewMiddleware(Settings.middleware)
 
-		for _, in := range Plugins.Inputs {
+		for _, in := range plugins.Inputs {
 			middleware.ReadFrom(in)
 		}
 
 		// We are going only to read responses, so using same ReadFrom method
-		for _, out := range Plugins.Outputs {
+		for _, out := range plugins.Outputs {
 			if r, ok := out.(io.Reader); ok {
 				middleware.ReadFrom(r)
 			}
 		}
-
+		wg.Add(1)
 		go func() {
-			if err := CopyMulty(middleware, Plugins.Outputs...); err != nil {
+			if err := CopyMulty(middleware, plugins.Outputs...); err != nil {
 				log.Println("Error during copy: ", err)
-				close(stop)
+				Close(stop)
 			}
 		}()
 	} else {
-		for _, in := range Plugins.Inputs {
+		for _, in := range plugins.Inputs {
+			wg.Add(1)
 			go func(in io.Reader) {
-				if err := CopyMulty(in, Plugins.Outputs...); err != nil {
+				if err := CopyMulty(in, plugins.Outputs...); err != nil {
 					log.Println("Error during copy: ", err)
-					close(stop)
+					Close(stop)
 				}
 			}(in)
 		}
 
-		for _, out := range Plugins.Outputs {
+		for _, out := range plugins.Outputs {
 			if r, ok := out.(io.Reader); ok {
+				wg.Add(1)
 				go func(r io.Reader) {
-					if err := CopyMulty(r, Plugins.Outputs...); err != nil {
+					if err := CopyMulty(r, plugins.Outputs...); err != nil {
 						log.Println("Error during copy: ", err)
-						close(stop)
+						Close(stop)
 					}
 				}(r)
 			}
@@ -54,15 +60,24 @@ func Start(stop chan int) {
 	for {
 		select {
 		case <-stop:
-			finalize()
+			finalize(plugins)
 			return
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }
 
+// Close closes all the goroutine and waits for it to finish.
+func Close(quit chan int) {
+	closeOnce.Do(func() {
+		close(quit)
+	})
+	wg.Wait()
+}
+
 // CopyMulty copies from 1 reader to multiple writers
-func CopyMulty(src io.Reader, writers ...io.Writer) (err error) {
+func CopyMulty(src io.Reader, writers ...io.Writer) error {
+	defer wg.Done()
 	buf := make([]byte, Settings.copyBufferSize)
 	wIndex := 0
 	modifier := NewHTTPModifier(&Settings.modifierConfig)
@@ -70,14 +85,14 @@ func CopyMulty(src io.Reader, writers ...io.Writer) (err error) {
 	filteredRequestsLastCleanTime := time.Now()
 
 	i := 0
-
 	for {
-		nr, er := src.Read(buf)
+		var nr int
+		nr, err := src.Read(buf)
 
-		if er == io.EOF {
+		if err == io.EOF {
 			return nil
 		}
-		if er != nil {
+		if err != nil {
 			return err
 		}
 
@@ -177,4 +192,5 @@ func CopyMulty(src io.Reader, writers ...io.Writer) (err error) {
 
 		i++
 	}
+
 }
